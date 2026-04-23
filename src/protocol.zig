@@ -6,7 +6,7 @@ pub const ConnectMsg = struct {
 
 pub const DataMsg = struct {
     session: u32,
-    pos: []const u8,
+    pos: u32,
     data: []const u8,
 };
 
@@ -26,18 +26,36 @@ pub const Message = union(MessageType) {
     close: CloseMsg,
 
     pub fn parseMessage(input: []const u8) !Message {
+        // TODO: Add more advanced validation; like seperators (/)
+
         var it = std.mem.tokenizeScalar(u8, input, '/');
         _ = it.next(); // skip message type (connect, data, etc)
 
+        // /CONNECT/12/
         if (std.mem.startsWith(u8, input, "/CONNECT")) {
             const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
             return Message{ .connect = .{ .session = sessionId } };
         }
 
+        // /ACK/12/
         if (std.mem.startsWith(u8, input, "/ACK")) {
             const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
             const length = try std.fmt.parseInt(u32, it.next().?, 10);
             return Message{ .ack = .{ .session = sessionId, .length = length } };
+        }
+
+        // /DATA/SESSION/POS/DATA/
+        if (std.mem.startsWith(u8, input, "/DATA")) {
+            const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
+            const pos = try std.fmt.parseInt(u32, it.next().?, 10);
+            const data = it.next() orelse return error.InvalidMessage;
+            return Message{ .data = .{ .session = sessionId, .pos = pos, .data = data } };
+        }
+
+        // /close/SESSION/
+        if (std.mem.startsWith(u8, input, "/CLOSE")) {
+            const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
+            return Message{ .close = .{ .session = sessionId } };
         }
 
         return error.InvalidMessage;
@@ -63,7 +81,9 @@ test "parse valid message types" {
         want_tag: MessageType,
     }{
         .{ .input = "/CONNECT/42", .want_tag = .connect },
-        // TODO: Add more once done
+        .{ .input = "/ACK/42/12/", .want_tag = .ack },
+        .{ .input = "/CLOSE/42", .want_tag = .close },
+        .{ .input = "/DATA/32/1/hello, world\n/", .want_tag = .data },
     };
 
     for (cases) |c| {
@@ -91,6 +111,56 @@ test "parse valid connect message" {
         } else {
             try testing.expectError(error.Overflow, Message.parseMessage(c.input));
         }
+    }
+}
+
+test "parse valid ack message" {
+    const cases = [_]struct {
+        input: []const u8,
+        sessionId: u32,
+        length: u32,
+    }{
+        .{ .input = "/ACK/42/2/", .sessionId = 42, .length = 2 },
+        .{ .input = "/ACK/0/1/", .sessionId = 0, .length = 1 },
+    };
+
+    for (cases) |c| {
+        const msg = try Message.parseMessage(c.input);
+        try testing.expectEqual(c.sessionId, msg.ack.session);
+        try testing.expectEqual(c.length, msg.ack.length);
+    }
+}
+
+test "parse valid close message" {
+    const cases = [_]struct {
+        input: []const u8,
+        sessionId: u32,
+    }{
+        .{ .input = "/CLOSE/12/", .sessionId = 12 },
+        .{ .input = "/CLOSE/0/", .sessionId = 0 },
+    };
+
+    for (cases) |c| {
+        const msg = try Message.parseMessage(c.input);
+        try testing.expectEqual(c.sessionId, msg.close.session);
+    }
+}
+
+test "parse valid data message" {
+    const cases = [_]struct {
+        input: []const u8,
+        sessionId: u32,
+        pos: u32,
+        data: []const u8,
+    }{
+        .{ .input = "/DATA/42/1/Hello, world\n/", .sessionId = 42, .pos = 1, .data = "Hello, world\n" },
+    };
+
+    for (cases) |c| {
+        const msg = try Message.parseMessage(c.input);
+        try testing.expectEqual(c.sessionId, msg.data.session);
+        try testing.expectEqual(c.pos, msg.data.pos);
+        try testing.expectEqualStrings(c.data, msg.data.data);
     }
 }
 

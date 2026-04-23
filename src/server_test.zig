@@ -7,8 +7,6 @@ const Server = server_mod.ReverseServer;
 const Io = std.Io;
 const net = Io.net;
 
-pub const std_options: std.Options = .{ .log_level = .debug };
-
 test "smoke connect test: expected ack with 0 length" {
     var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{
         .concurrent_limit = .limited(4),

@@ -24,6 +24,15 @@ pub const Message = union(MessageType) {
     data: DataMsg,
     ack: AckMsg,
     close: CloseMsg,
+    
+    pub fn getSessionId(msg: Message) u32 {
+        return switch (msg) {
+            .connect => |m| m.session,
+            .data => |m| m.session,
+            .ack => |m| m.session,
+            .close => |m| m.session, 
+        }; 
+    }
 
     pub fn parseMessage(input: []const u8) !Message {
         // TODO: Add more advanced validation; like seperators (/)
@@ -31,13 +40,13 @@ pub const Message = union(MessageType) {
         var it = std.mem.tokenizeScalar(u8, input, '/');
         _ = it.next(); // skip message type (connect, data, etc)
 
-        // /CONNECT/12/
+        // /CONNECT/SESSION/
         if (std.mem.startsWith(u8, input, "/CONNECT")) {
             const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
             return Message{ .connect = .{ .session = sessionId } };
         }
 
-        // /ACK/12/
+        // /ACK/SESSION/LENGTH/
         if (std.mem.startsWith(u8, input, "/ACK")) {
             const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
             const length = try std.fmt.parseInt(u32, it.next().?, 10);
@@ -66,7 +75,7 @@ pub const Message = union(MessageType) {
             .connect => |m| try std.fmt.allocPrint(allocator, "/CONNECT/{d}/", .{m.session}),
             .data => |m| try std.fmt.allocPrint(
                 allocator,
-                "/DATA/{d}/{s}/{s}/",
+                "/DATA/{d}/{d}/{s}/",
                 .{ m.session, m.pos, m.data },
             ),
             .ack => |m| try std.fmt.allocPrint(allocator, "/ACK/{d}/{d}/", .{ m.session, m.length }),

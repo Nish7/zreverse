@@ -12,11 +12,12 @@ pub fn deinit(self: *Client) void {
 }
 
 pub fn send(self: *Client, to: net.IpAddress, data: []const u8) !void {
-    _ = try self.socket.send(self.io, &to, data);
+    try self.socket.send(self.io, &to, data);
 }
 
 pub fn recieve(self: *Client) !Message {
     var buf: [4096]u8 = undefined;
+    // TODO: fix the buffer sizes
     const msg = try self.socket.receive(self.io, &buf);
     return try Message.parseMessage(msg.data);
 }

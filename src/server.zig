@@ -14,10 +14,11 @@ pub fn init(opts: Options) ReverseServer {
 }
 
 pub fn deinit(server: *ReverseServer) void {
-    server.udp_socket.?.close(server.io);
+    if (server.udp_socket) |socket| socket.close(server.io);
 }
 
 pub fn bind(server: *ReverseServer) !void {
+    log.debug("Server listening: {f}", .{server.listener_addr});
     const io = server.io;
     server.udp_socket = server.listener_addr.bind(io, .{ .mode = .dgram, .protocol = .udp }) catch |err| {
         log.err("failed to bind to port: {d}: {t}", .{ server.listener_addr.getPort(), err });
@@ -32,8 +33,7 @@ pub fn start(server: *ReverseServer) !void {
 
 pub fn serve(server: *ReverseServer) !void {
     while (true) {
-        server.recieve() catch |err| {
-            _ = err;
+        server.recieve() catch {
             continue;
         };
     }
@@ -41,8 +41,7 @@ pub fn serve(server: *ReverseServer) !void {
 
 pub fn recieve(server: *ReverseServer) !void {
     const io = server.io;
-    var buf: [2048]u8 = undefined;
-
+    var buf: [1024]u8 = undefined;
     const msg = try server.udp_socket.?.receive(io, &buf);
     const parsed_message = Message.parseMessage(msg.data) catch |err| {
         log.err("failed to parse message: {t}", .{err});
@@ -67,7 +66,6 @@ pub fn send(server: *ReverseServer, to: *const IpAddress, message: Message) !voi
     const io = server.io;
     const message_payload = try message.getPayload(server.allocator);
     defer server.allocator.free(message_payload);
-    std.log.debug("Message Payload: {s}", .{message_payload});
     try server.udp_socket.?.send(io, to, message_payload);
 }
 

@@ -7,6 +7,11 @@ pub fn init(io: Io, allocator: Allocator, session_id: u32, from: net.IpAddress) 
     return .{ .io = io, .allocator = allocator, .session_id = session_id, .from = from };
 }
 
+pub fn deinit(_: *Session) void {
+    // @TODO
+    return;
+}
+
 pub fn handleIncoming(_: *Session, message: Message) !?Message {
     switch (message) {
         .connect => |m| {

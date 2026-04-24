@@ -17,6 +17,12 @@ pub fn init(opts: Options) ReverseServer {
 
 pub fn deinit(server: *ReverseServer) void {
     if (server.udp_socket) |socket| socket.close(server.io);
+    var it = server.sessions.iterator();
+    
+    while (it.next()) |s| {
+        s.value_ptr.deinit();
+    }
+    
     server.sessions.deinit();
 }
 
@@ -41,7 +47,12 @@ pub fn start(server: *ReverseServer) !void {
 }
 
 pub fn serve(server: *ReverseServer) !void {
-    while (true) try server.recieve();
+    while (true) {
+        server.recieve() catch |err| switch (err) {
+            error.Canceled => return,
+            else => return err,
+        };
+    }
 }
 
 pub fn recieve(server: *ReverseServer) !void {
@@ -59,7 +70,7 @@ pub fn recieve(server: *ReverseServer) !void {
         log.err("Error in handling message {t}", .{err});
         return err;
     };
-    
+
     if (res) |reply| server.send(&s.from, reply) catch |err| {
         log.err("Error in reply message {t}", .{err});
         return err;

@@ -9,7 +9,7 @@ pub fn init() !TestEnv {
     const addr = try net.IpAddress.parse("127.0.0.1", 0);
     var server = server_mod.ReverseServer.init(.{
         .allocator = std.testing.allocator,
-        .io = threaded.io(),
+        .io = threaded.io(), // @TODO: This may be problem with the lifetime of io.
         .listener_addr = addr,
     });
     try server.bind();

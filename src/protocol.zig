@@ -24,17 +24,24 @@ pub const Message = union(MessageType) {
     data: DataMsg,
     ack: AckMsg,
     close: CloseMsg,
-    
+
     pub fn getSessionId(msg: Message) u32 {
         return switch (msg) {
             .connect => |m| m.session,
             .data => |m| m.session,
             .ack => |m| m.session,
-            .close => |m| m.session, 
-        }; 
+            .close => |m| m.session,
+        };
     }
 
-    pub fn parseMessage(input: []const u8) !Message {
+    pub fn deinit(msg: Message, allocator: std.mem.Allocator) void {
+        switch (msg) {
+            .data => |m| allocator.free(m.data),
+            else => {},
+        }
+    }
+
+    pub fn parseMessage(allocator: std.mem.Allocator, input: []const u8) !Message {
         // TODO: Add more advanced validation; like seperators (/)
 
         var it = std.mem.tokenizeScalar(u8, input, '/');
@@ -57,7 +64,8 @@ pub const Message = union(MessageType) {
         if (std.mem.startsWith(u8, input, "/DATA")) {
             const sessionId = try std.fmt.parseInt(u32, it.next().?, 10);
             const pos = try std.fmt.parseInt(u32, it.next().?, 10);
-            const data = it.next() orelse return error.InvalidMessage;
+            const escaped_data = it.next() orelse return error.InvalidMessage;
+            const data = try unescapeData(allocator, escaped_data);
             return Message{ .data = .{ .session = sessionId, .pos = pos, .data = data } };
         }
 
@@ -68,6 +76,27 @@ pub const Message = union(MessageType) {
         }
 
         return error.InvalidMessage;
+    }
+
+    pub fn unescapeData(allocator: std.mem.Allocator, payload: []const u8) ![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+
+        var i: usize = 0;
+        while (i < payload.len) : (i += 1) {
+            if (payload[i] == '\\' and i + 1 < payload.len) {
+                const next = payload[i + 1];
+                if (next == '\\' or next == '/') {
+                    try out.append(allocator, next);
+                    i += 1;
+                    continue;
+                }
+            }
+
+            try out.append(allocator, payload[i]);
+        }
+
+        return out.toOwnedSlice(allocator);
     }
 
     pub fn getPayload(msg: Message, allocator: std.mem.Allocator) ![]const u8 {
@@ -96,7 +125,8 @@ test "parse valid message types" {
     };
 
     for (cases) |c| {
-        const msg = try Message.parseMessage(c.input);
+        const msg = try Message.parseMessage(testing.allocator, c.input);
+        defer msg.deinit(testing.allocator);
         try testing.expectEqual(std.meta.activeTag(msg), c.want_tag);
     }
 }
@@ -115,10 +145,10 @@ test "parse valid connect message" {
 
     for (cases) |c| {
         if (c.sessionId) |sid| {
-            const msg = try Message.parseMessage(c.input);
+            const msg = try Message.parseMessage(testing.allocator, c.input);
             try testing.expectEqual(sid, msg.connect.session);
         } else {
-            try testing.expectError(error.Overflow, Message.parseMessage(c.input));
+            try testing.expectError(error.Overflow, Message.parseMessage(testing.allocator, c.input));
         }
     }
 }
@@ -134,7 +164,8 @@ test "parse valid ack message" {
     };
 
     for (cases) |c| {
-        const msg = try Message.parseMessage(c.input);
+        const msg = try Message.parseMessage(testing.allocator, c.input);
+        defer msg.deinit(testing.allocator);
         try testing.expectEqual(c.sessionId, msg.ack.session);
         try testing.expectEqual(c.length, msg.ack.length);
     }
@@ -150,7 +181,7 @@ test "parse valid close message" {
     };
 
     for (cases) |c| {
-        const msg = try Message.parseMessage(c.input);
+        const msg = try Message.parseMessage(testing.allocator, c.input);
         try testing.expectEqual(c.sessionId, msg.close.session);
     }
 }
@@ -166,16 +197,24 @@ test "parse valid data message" {
     };
 
     for (cases) |c| {
-        const msg = try Message.parseMessage(c.input);
+        const msg = try Message.parseMessage(testing.allocator, c.input);
+        defer msg.deinit(testing.allocator);
         try testing.expectEqual(c.sessionId, msg.data.session);
         try testing.expectEqual(c.pos, msg.data.pos);
         try testing.expectEqualStrings(c.data, msg.data.data);
     }
 }
 
+test "unescape data payload" {
+    var payload = [_]u8{ 'f', 'o', 'o', '\\', '/', 'b', 'a', 'r', '\\', '\\', 'b', 'a', 'z' };
+    const unescaped = try Message.unescapeData(testing.allocator, payload[0..]);
+    defer testing.allocator.free(unescaped);
+    try testing.expectEqualStrings("foo/bar\\baz", unescaped);
+}
+
 test "parse invalid message returns error" {
-    try testing.expectError(error.InvalidMessage, Message.parseMessage(""));
-    try testing.expectError(error.InvalidMessage, Message.parseMessage("BOGUS"));
+    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, ""));
+    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "BOGUS"));
 }
 
 const std = @import("std");

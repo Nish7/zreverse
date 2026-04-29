@@ -3,7 +3,7 @@ test "smoke connect test: expected ack with 0 length" {
     defer env.deinit();
 
     const io = env.threaded.io();
-    
+
     var client = try Client.init(io);
     defer client.deinit();
 
@@ -12,7 +12,7 @@ test "smoke connect test: expected ack with 0 length" {
     defer recv_future.cancel(io) catch {};
 
     try client.send(env.server.udp_socket.?.address, "/CONNECT/42");
-    const recieved_message = try client.recieve();
+    const recieved_message = try client.recieve(testing.allocator);
 
     try testing.expectEqual(@as(u32, 0), recieved_message.ack.length);
     try testing.expectEqual(@as(u32, 42), recieved_message.ack.session);
@@ -33,8 +33,8 @@ test "basic session management test" {
 
     var a_connect_fut = try io.concurrent(Client.send, .{ &client_a, env.server.udp_socket.?.address, "/CONNECT/1/" });
     var b_connect_fut = try io.concurrent(Client.send, .{ &client_b, env.server.udp_socket.?.address, "/CONNECT/2/" });
-    var a_ack_fut = try io.concurrent(Client.recieve, .{&client_a});
-    var b_ack_fut = try io.concurrent(Client.recieve, .{&client_b});
+    var a_ack_fut = try io.concurrent(Client.recieve, .{ &client_a, testing.allocator });
+    var b_ack_fut = try io.concurrent(Client.recieve, .{ &client_b, testing.allocator });
 
     try a_connect_fut.await(io);
     try b_connect_fut.await(io);
@@ -48,6 +48,68 @@ test "basic session management test" {
     try testing.expectEqual(@as(u32, 2), b_ack.ack.session);
 }
 
+test "data message: ack and reverse reply" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    try expectConnectMessage(&client, &env.server, 12345);
+    try expectDataRecieve(&client, &env.server, "hello\n", 12345, 0, 6, "olleh\n");
+    try expectDataRecieve(&client, &env.server, "Hello, world!\n", 12345, 6, 20, "!dlrow ,olleH\n");
+}
+
+fn expectConnectMessage(client: *Client, server: *Server, session_id: u32) !void {
+    const msg = try std.fmt.allocPrint(testing.allocator, "/CONNECT/{d}/", .{session_id});
+    defer testing.allocator.free(msg);
+    try client.send(server.udp_socket.?.address, msg);
+    const connect_ack = try client.recieve(testing.allocator);
+    defer connect_ack.deinit(testing.allocator);
+    try testing.expectEqual(session_id, connect_ack.ack.session);
+    try testing.expectEqual(@as(u32, 0), connect_ack.ack.length);
+}
+
+fn expectDataRecieve(
+    client: *Client,
+    server: *Server,
+    message: []const u8,
+    session_id: u32,
+    first_pos: u32,
+    ack_len: u32,
+    reversed: []const u8,
+) !void {
+    const msg = try std.fmt.allocPrint(
+        testing.allocator,
+        "/DATA/{d}/{d}/{s}/",
+        .{ session_id, first_pos, message },
+    );
+    defer testing.allocator.free(msg);
+
+    try client.send(server.udp_socket.?.address, msg);
+    const first_a = try client.recieve(testing.allocator);
+    defer first_a.deinit(testing.allocator);
+    const first_b = try client.recieve(testing.allocator);
+    defer first_b.deinit(testing.allocator);
+
+    if (std.meta.activeTag(first_a) == .ack) {
+        try testing.expectEqual(session_id, first_a.ack.session);
+        try testing.expectEqual(ack_len, first_a.ack.length);
+        try testing.expectEqual(session_id, first_b.data.session);
+        try testing.expectEqual(first_pos, first_b.data.pos);
+        try testing.expectEqualStrings(reversed, first_b.data.data);
+    } else {
+        try testing.expectEqual(session_id, first_a.data.session);
+        try testing.expectEqual(first_pos, first_a.data.pos);
+        try testing.expectEqualStrings(reversed, first_a.data.data);
+        try testing.expectEqual(session_id, first_b.ack.session);
+        try testing.expectEqual(ack_len, first_b.ack.length);
+    }
+}
 
 const std = @import("std");
 const server_mod = @import("../src/server.zig");

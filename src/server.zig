@@ -18,11 +18,11 @@ pub fn init(opts: Options) ReverseServer {
 pub fn deinit(server: *ReverseServer) void {
     if (server.udp_socket) |socket| socket.close(server.io);
     var it = server.sessions.iterator();
-    
+
     while (it.next()) |s| {
         s.value_ptr.deinit();
     }
-    
+
     server.sessions.deinit();
 }
 
@@ -59,11 +59,12 @@ pub fn recieve(server: *ReverseServer) !void {
     const io = server.io;
     var buf: [1024]u8 = undefined;
     const msg = try server.udp_socket.?.receive(io, &buf);
-    const parsed_message = Message.parseMessage(msg.data) catch |err| {
+    const parsed_message = Message.parseMessage(server.allocator, msg.data) catch |err| {
         log.err("failed to parse message: {t}", .{err});
         return err;
     };
 
+    defer parsed_message.deinit(server.allocator);
     var s: *Session = try server.getOrCreateSession(parsed_message.getSessionId(), msg.from);
 
     const res = s.handleIncoming(parsed_message) catch |err| {
@@ -71,10 +72,13 @@ pub fn recieve(server: *ReverseServer) !void {
         return err;
     };
 
-    if (res) |reply| server.send(&s.from, reply) catch |err| {
-        log.err("Error in reply message {t}", .{err});
-        return err;
-    };
+    for (res.slice()) |reply| {
+        server.send(&s.from, reply) catch |err| {
+            log.err("Error in reply message {t}", .{err});
+            return err;
+        };
+        reply.deinit(server.allocator);
+    }
 }
 
 pub fn send(server: *ReverseServer, to: *const IpAddress, message: Message) !void {

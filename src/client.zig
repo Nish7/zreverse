@@ -15,11 +15,11 @@ pub fn send(self: *Client, to: net.IpAddress, data: []const u8) !void {
     try self.socket.send(self.io, &to, data);
 }
 
-pub fn recieve(self: *Client) !Message {
+pub fn recieve(self: *Client, allocator: std.mem.Allocator) !Message {
     var buf: [4096]u8 = undefined;
     // TODO: fix the buffer sizes
     const msg = try self.socket.receive(self.io, &buf);
-    return try Message.parseMessage(msg.data);
+    return try Message.parseMessage(allocator, msg.data);
 }
 
 pub const Client = @This();

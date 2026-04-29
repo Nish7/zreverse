@@ -4,6 +4,7 @@ session_id: u32,
 from: net.IpAddress,
 current_line: std.ArrayList(u8),
 recived_len: u32 = 0,
+closed: bool = false,
 
 pub fn init(io: Io, allocator: Allocator, session_id: u32, from: net.IpAddress) Session {
     return .{ .io = io, .allocator = allocator, .session_id = session_id, .from = from, .current_line = .empty };
@@ -28,7 +29,7 @@ pub fn handleIncoming(session: *Session, message: Message) !Responses {
             session.recived_len += @intCast(m.data.len);
 
             if (std.mem.findScalar(u8, session.current_line.items, '\n')) |idx| {
-                const reversed = try session.allocator.dupe(u8, session.current_line.items[0..idx + 1]);
+                const reversed = try session.allocator.dupe(u8, session.current_line.items[0 .. idx + 1]);
                 std.mem.reverse(u8, reversed[0..idx]);
                 session.current_line.replaceRangeAssumeCapacity(0, idx + 1, "");
 
@@ -36,6 +37,10 @@ pub fn handleIncoming(session: *Session, message: Message) !Responses {
             }
 
             try res.push(.{ .ack = .{ .session = m.session, .length = session.recived_len } });
+        },
+        .close => |m| {
+            session.closed = true;
+            try res.push(.{ .close = .{ .session = m.session } });
         },
         else => @panic("unhandled message types"),
     }

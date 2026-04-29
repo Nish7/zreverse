@@ -62,6 +62,7 @@ test "data message: ack and reverse reply" {
     try expectConnectMessage(&client, &env.server, 12345);
     try expectDataRecieve(&client, &env.server, "hello\n", 12345, 0, 6, "olleh\n");
     try expectDataRecieve(&client, &env.server, "Hello, world!\n", 12345, 6, 20, "!dlrow ,olleH\n");
+    try expectCloseMessage(&client, &env.server, 12345);
 }
 
 fn expectConnectMessage(client: *Client, server: *Server, session_id: u32) !void {
@@ -109,6 +110,16 @@ fn expectDataRecieve(
         try testing.expectEqual(session_id, first_b.ack.session);
         try testing.expectEqual(ack_len, first_b.ack.length);
     }
+}
+
+fn expectCloseMessage(client: *Client, server: *Server, session_id: u32) !void {
+    const msg = try std.fmt.allocPrint(testing.allocator, "/CLOSE/{d}/", .{session_id});
+    defer testing.allocator.free(msg);
+
+    try client.send(server.udp_socket.?.address, msg);
+    const close_msg = try client.recieve(testing.allocator);
+    defer close_msg.deinit(testing.allocator);
+    try testing.expectEqual(session_id, close_msg.close.session);
 }
 
 const std = @import("std");

@@ -71,13 +71,18 @@ pub fn recieve(server: *ReverseServer) !void {
         log.err("Error in handling message {t}", .{err});
         return err;
     };
-
+    
     for (res.slice()) |reply| {
         server.send(&s.from, reply) catch |err| {
             log.err("Error in reply message {t}", .{err});
             return err;
         };
         reply.deinit(server.allocator);
+    }
+    
+    if (s.closed) {
+        s.deinit();
+        _ = server.sessions.remove(s.session_id);
     }
 }
 

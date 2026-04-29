@@ -17,34 +17,41 @@ pub fn deinit(s: *Session) void {
 pub fn handleIncoming(session: *Session, message: Message) !Responses {
     var res = Responses{};
     switch (message) {
-        .connect => |m| {
-            std.log.debug("Connection Message Recieved Session Id: {d}", .{m.session});
-            try res.push(.{ .ack = .{ .session = m.session, .length = 0 } });
-        },
-        .data => |m| {
-            std.log.debug("Data Message Recieved Session Id: {d}", .{m.session});
-            if (m.pos != session.recived_len) return error.NotRecieved;
-
-            try session.current_line.appendSlice(session.allocator, m.data);
-            session.recived_len += @intCast(m.data.len);
-
-            if (std.mem.findScalar(u8, session.current_line.items, '\n')) |idx| {
-                const reversed = try session.allocator.dupe(u8, session.current_line.items[0 .. idx + 1]);
-                std.mem.reverse(u8, reversed[0..idx]);
-                session.current_line.replaceRangeAssumeCapacity(0, idx + 1, "");
-
-                try res.push(.{ .data = .{ .session = m.session, .pos = m.pos, .data = reversed } });
-            }
-
-            try res.push(.{ .ack = .{ .session = m.session, .length = session.recived_len } });
-        },
-        .close => |m| {
-            session.closed = true;
-            try res.push(.{ .close = .{ .session = m.session } });
-        },
+        .connect => |m| try session.handleConnect(m, &res),
+        .data => |m| try session.handleData(m, &res),
+        .close => |m| try session.handleClose(m, &res),
         else => @panic("unhandled message types"),
     }
     return res;
+}
+
+fn handleConnect(session: *Session, msg: protocol.ConnectMsg, res: *Responses) !void {
+    _ = session;
+    std.log.debug("Connection Message Recieved Session Id: {d}", .{msg.session});
+    try res.push(.{ .ack = .{ .session = msg.session, .length = 0 } });
+}
+
+fn handleData(session: *Session, msg: protocol.DataMsg, res: *Responses) !void {
+    std.log.debug("Data Message Recieved Session Id: {d}", .{msg.session});
+    if (msg.pos != session.recived_len) return error.NotRecieved;
+
+    try session.current_line.appendSlice(session.allocator, msg.data);
+    session.recived_len += @intCast(msg.data.len);
+
+    if (std.mem.findScalar(u8, session.current_line.items, '\n')) |idx| {
+        const reversed = try session.allocator.dupe(u8, session.current_line.items[0 .. idx + 1]);
+        std.mem.reverse(u8, reversed[0..idx]);
+        session.current_line.replaceRangeAssumeCapacity(0, idx + 1, "");
+
+        try res.push(.{ .data = .{ .session = msg.session, .pos = msg.pos, .data = reversed } });
+    }
+
+    try res.push(.{ .ack = .{ .session = msg.session, .length = session.recived_len } });
+}
+
+fn handleClose(session: *Session, msg: protocol.CloseMsg, res: *Responses) !void {
+    session.closed = true;
+    try res.push(.{ .close = .{ .session = msg.session } });
 }
 
 // @TODO: Find a better way to handle multiple responses

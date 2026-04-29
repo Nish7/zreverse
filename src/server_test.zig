@@ -11,7 +11,7 @@ test "smoke connect test: expected ack with 0 length" {
     defer recv_future.await(io) catch {};
     defer recv_future.cancel(io) catch {};
 
-    try client.send(env.server.udp_socket.?.address, "/CONNECT/42");
+    try client.send(env.server.udp_socket.?.address, "/CONNECT/42/");
     const recieved_message = try client.recieve(testing.allocator);
 
     try testing.expectEqual(@as(u32, 0), recieved_message.ack.length);
@@ -65,6 +65,23 @@ test "data message: ack and reverse reply" {
     try expectCloseMessage(&client, &env.server, 12345);
 }
 
+test "single line - mulitple data payload" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    try expectConnectMessage(&client, &env.server, 12345);
+    try expectDataRecieve(&client, &env.server, "hello", 12345, 0, 5, null);
+    try expectDataRecieve(&client, &env.server, "world!\n", 12345, 5, 12, "!dlrowolleh\n");
+    try expectCloseMessage(&client, &env.server, 12345);
+}
+
 fn expectConnectMessage(client: *Client, server: *Server, session_id: u32) !void {
     const msg = try std.fmt.allocPrint(testing.allocator, "/CONNECT/{d}/", .{session_id});
     defer testing.allocator.free(msg);
@@ -82,7 +99,7 @@ fn expectDataRecieve(
     session_id: u32,
     first_pos: u32,
     ack_len: u32,
-    reversed: []const u8,
+    reversed: ?[]const u8,
 ) !void {
     const msg = try std.fmt.allocPrint(
         testing.allocator,
@@ -94,19 +111,28 @@ fn expectDataRecieve(
     try client.send(server.udp_socket.?.address, msg);
     const first_a = try client.recieve(testing.allocator);
     defer first_a.deinit(testing.allocator);
+
+    if (reversed == null) {
+        try testing.expectEqual(.ack, std.meta.activeTag(first_a));
+        try testing.expectEqual(session_id, first_a.ack.session);
+        try testing.expectEqual(ack_len, first_a.ack.length);
+        return;
+    }
+
     const first_b = try client.recieve(testing.allocator);
     defer first_b.deinit(testing.allocator);
 
+    const expected_data = reversed.?;
     if (std.meta.activeTag(first_a) == .ack) {
         try testing.expectEqual(session_id, first_a.ack.session);
         try testing.expectEqual(ack_len, first_a.ack.length);
         try testing.expectEqual(session_id, first_b.data.session);
         try testing.expectEqual(first_pos, first_b.data.pos);
-        try testing.expectEqualStrings(reversed, first_b.data.data);
+        try testing.expectEqualStrings(expected_data, first_b.data.data);
     } else {
         try testing.expectEqual(session_id, first_a.data.session);
         try testing.expectEqual(first_pos, first_a.data.pos);
-        try testing.expectEqualStrings(reversed, first_a.data.data);
+        try testing.expectEqualStrings(expected_data, first_a.data.data);
         try testing.expectEqual(session_id, first_b.ack.session);
         try testing.expectEqual(ack_len, first_b.ack.length);
     }

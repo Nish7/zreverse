@@ -50,7 +50,7 @@ pub fn serve(server: *ReverseServer) !void {
     while (true) {
         server.recieve() catch |err| switch (err) {
             error.Canceled => return,
-            else => return err,
+            else => {},
         };
     }
 }
@@ -65,7 +65,10 @@ pub fn recieve(server: *ReverseServer) !void {
     };
 
     defer parsed_message.deinit(server.allocator);
-    var s: *Session = try server.getOrCreateSession(parsed_message.getSessionId(), msg.from);
+    var s: *Session = server.getOrCreateSession(parsed_message.getSessionId(), msg.from) catch |err| {
+        log.err("Invalid Session Id {t}", .{err});
+        return err;
+    };
 
     const res = s.handleIncoming(parsed_message) catch |err| {
         log.err("Error in handling message {t}", .{err});

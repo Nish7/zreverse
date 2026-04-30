@@ -5,16 +5,27 @@ from: net.IpAddress,
 current_line: std.ArrayList(u8),
 recived_len: u32 = 0,
 closed: bool = false,
+session_expiry_timeout: Io.Clock.Timestamp,
+
+const SESSION_EXPIRY_TIMEOUT: Io.Clock.Duration = .{
+    .raw = Io.Duration.fromSeconds(60),
+    .clock = .boot,
+};
 
 pub fn init(io: Io, allocator: Allocator, session_id: u32, from: net.IpAddress) Session {
-    return .{ .io = io, .allocator = allocator, .session_id = session_id, .from = from, .current_line = .empty };
+    return .{ .io = io, .allocator = allocator, .session_id = session_id, .from = from, .current_line = .empty, .session_expiry_timeout = Io.Clock.Timestamp.fromNow(io, SESSION_EXPIRY_TIMEOUT) };
 }
 
 pub fn deinit(s: *Session) void {
     s.current_line.deinit(s.allocator);
 }
 
+pub fn updateSessionExpiryTimeout(s: *Session) void {
+    s.session_expiry_timeout = Io.Clock.Timestamp.fromNow(s.io, SESSION_EXPIRY_TIMEOUT);
+}
+
 pub fn handleIncoming(session: *Session, message: Message) !Responses {
+    session.updateSessionExpiryTimeout();
     var res = Responses{};
     switch (message) {
         .connect => |m| try session.handleConnect(m, &res),

@@ -50,15 +50,36 @@ pub fn serve(server: *ReverseServer) !void {
     while (true) {
         server.recieve() catch |err| switch (err) {
             error.Canceled => return,
+            error.Timeout => {},
             else => {},
         };
+
+        server.expireSession();
+    }
+}
+
+pub fn expireSession(server: *ReverseServer) void {
+    var it = server.sessions.iterator();
+    const now = Io.Clock.Timestamp.now(server.io, .boot);
+    
+    while (it.next()) |s| {
+        if (now.compare(.gte, s.value_ptr.session_expiry_timeout)) {
+            log.debug("Session Expired by Timeout [{d}]", .{s.value_ptr.session_id});
+            s.value_ptr.deinit();
+            server.sessions.removeByPtr(s.key_ptr);
+        }
     }
 }
 
 pub fn recieve(server: *ReverseServer) !void {
     const io = server.io;
     var buf: [1024]u8 = undefined;
-    const msg = try server.udp_socket.?.receive(io, &buf);
+
+    const msg = try server.udp_socket.?.receiveTimeout(io, &buf, .{ .duration = .{
+        .raw = Io.Duration.fromMilliseconds(50),
+        .clock = .boot,
+    } });
+
     const parsed_message = Message.parseMessage(server.allocator, msg.data) catch |err| {
         log.err("failed to parse message: {t}", .{err});
         return err;
@@ -74,7 +95,7 @@ pub fn recieve(server: *ReverseServer) !void {
         log.err("Error in handling message {t}", .{err});
         return err;
     };
-    
+
     for (res.slice()) |reply| {
         server.send(&s.from, reply) catch |err| {
             log.err("Error in reply message {t}", .{err});
@@ -82,7 +103,7 @@ pub fn recieve(server: *ReverseServer) !void {
         };
         reply.deinit(server.allocator);
     }
-    
+
     if (s.closed) {
         s.deinit();
         _ = server.sessions.remove(s.session_id);

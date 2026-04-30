@@ -82,6 +82,54 @@ test "single line - mulitple data payload" {
     try testutils.expectCloseMessage(&client, &env.server, 12345);
 }
 
+test "session expiry removes only timed out session" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client_a = try Client.init(io, testing.allocator);
+    var client_b = try Client.init(io, testing.allocator);
+    defer client_a.deinit();
+    defer client_b.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    try testutils.expectConnectMessage(&client_a, &env.server, 101);
+    try testutils.expectConnectMessage(&client_b, &env.server, 202);
+    try testing.expect(env.server.sessions.contains(101));
+    try testing.expect(env.server.sessions.contains(202));
+
+    const expiring = env.server.sessions.getPtr(101).?;
+    expiring.session_expiry_timeout = Io.Clock.Timestamp.now(io, .boot);
+    env.server.expireSession();
+
+    try testing.expect(!env.server.sessions.contains(101));
+    try testing.expect(env.server.sessions.contains(202));
+}
+
+test "session expires after timeout tick without close message" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 9001;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+    try testing.expect(env.server.sessions.contains(session_id));
+
+    const s = env.server.sessions.getPtr(session_id).?;
+    s.session_expiry_timeout = Io.Clock.Timestamp.now(io, .boot);
+
+    try std.Io.sleep(io, .fromMilliseconds(120), .boot);
+
+    try testing.expect(!env.server.sessions.contains(session_id));
+}
 
 
 const std = @import("std");

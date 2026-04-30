@@ -112,6 +112,7 @@ pub const Message = union(MessageType) {
     }
 
     pub fn getPayload(msg: Message, allocator: std.mem.Allocator) ![]const u8 {
+        // @TODO: i can switch to fixed buffer, instead of heap allocator..
         return switch (msg) {
             .connect => |m| try std.fmt.allocPrint(allocator, "/CONNECT/{d}/", .{m.session}),
             .data => |m| try std.fmt.allocPrint(

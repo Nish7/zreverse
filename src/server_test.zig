@@ -82,6 +82,158 @@ test "single line - mulitple data payload" {
     try testutils.expectCloseMessage(&client, &env.server, 12345);
 }
 
+test "ack length beyond sent payload closes session" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 555;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+
+    // pending_len starts at 0, so ACK length 1 is invalid and should close the session.
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 1,
+        },
+    });
+
+    const reply = try client.recieve();
+    defer reply.deinit(testing.allocator);
+    try testing.expectEqual(.close, std.meta.activeTag(reply));
+    try testing.expectEqual(session_id, reply.close.session);
+}
+
+test "ack on closed session replies with close" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 556;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+    try testutils.expectCloseMessage(&client, &env.server, session_id);
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 0,
+        },
+    });
+
+    const reply = try client.recieve();
+    defer reply.deinit(testing.allocator);
+    try testing.expectEqual(.close, std.meta.activeTag(reply));
+    try testing.expectEqual(session_id, reply.close.session);
+}
+
+test "ack smaller than sent retransmits suffix" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 557;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+    try testutils.expectDataRecieve(&client, &env.server, "hello\n", session_id, 0, 6, "olleh\n");
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 3,
+        },
+    });
+
+    const reply = try client.recieve();
+    defer reply.deinit(testing.allocator);
+    try testing.expectEqual(.data, std.meta.activeTag(reply));
+    try testing.expectEqual(session_id, reply.data.session);
+    try testing.expectEqual(@as(u32, 3), reply.data.pos);
+    try testing.expectEqualStrings("eh\n", reply.data.data);
+}
+
+test "duplicate ack does not close session" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 558;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+    try testutils.expectDataRecieve(&client, &env.server, "hello\n", session_id, 0, 6, "olleh\n");
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 3,
+        },
+    });
+    const retransmit = try client.recieve();
+    defer retransmit.deinit(testing.allocator);
+    try testing.expectEqual(.data, std.meta.activeTag(retransmit));
+
+    // Duplicate/delayed ACK should be ignored and keep session alive.
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 3,
+        },
+    });
+    try std.Io.sleep(io, .fromMilliseconds(60), .boot);
+    try testing.expect(env.server.sessions.contains(session_id));
+}
+
+test "retransmit pending message after retransmission timeout" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 559;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+    try testutils.expectDataRecieve(&client, &env.server, "hello\n", session_id, 0, 6, "olleh\n");
+
+    const s = env.server.sessions.getPtr(session_id).?;
+    try testing.expect(s.pending_messages.items.len > 0);
+    s.pending_messages.items[0].timeout = Io.Clock.Timestamp.now(io, .boot);
+
+    // Let serve() run one receive-timeout tick and retransmit expired pending message.
+    try std.Io.sleep(io, .fromMilliseconds(120), .boot);
+
+    const retransmit = try client.recieve();
+    defer retransmit.deinit(testing.allocator);
+    try testing.expectEqual(.data, std.meta.activeTag(retransmit));
+    try testing.expectEqual(session_id, retransmit.data.session);
+    try testing.expectEqual(@as(u32, 0), retransmit.data.pos);
+    try testing.expectEqualStrings("olleh\n", retransmit.data.data);
+}
+
 test "session expiry removes only timed out session" {
     var env = try TestEnv.init();
     defer env.deinit();
@@ -102,33 +254,10 @@ test "session expiry removes only timed out session" {
 
     const expiring = env.server.sessions.getPtr(101).?;
     expiring.session_expiry_timeout = Io.Clock.Timestamp.now(io, .boot);
-    env.server.expireSession();
+    try std.Io.sleep(io, .fromMilliseconds(120), .boot);
 
     try testing.expect(!env.server.sessions.contains(101));
     try testing.expect(env.server.sessions.contains(202));
-}
-
-test "session expires after timeout tick without close message" {
-    var env = try TestEnv.init();
-    defer env.deinit();
-    const io = env.threaded.io();
-
-    var client = try Client.init(io, testing.allocator);
-    defer client.deinit();
-
-    var serv_future = try env.startServer();
-    defer env.stopServer(&serv_future);
-
-    const session_id: u32 = 9001;
-    try testutils.expectConnectMessage(&client, &env.server, session_id);
-    try testing.expect(env.server.sessions.contains(session_id));
-
-    const s = env.server.sessions.getPtr(session_id).?;
-    s.session_expiry_timeout = Io.Clock.Timestamp.now(io, .boot);
-
-    try std.Io.sleep(io, .fromMilliseconds(120), .boot);
-
-    try testing.expect(!env.server.sessions.contains(session_id));
 }
 
 

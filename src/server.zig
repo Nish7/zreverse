@@ -54,19 +54,44 @@ pub fn serve(server: *ReverseServer) !void {
             else => {},
         };
 
-        server.expireSession();
+        server.checkTimeout() catch |err| {
+            log.err("Error detected: {t}", .{err});
+        };
     }
 }
 
-pub fn expireSession(server: *ReverseServer) void {
+pub fn retransmitPendingMsg(server: *ReverseServer, session: *Session, out: *std.ArrayList(Message)) !void {
+    try session.takeExpiredPendingMessages(out);
+    for (out.items) |m| {
+        try server.send(&session.from, m);
+    }
+}
+
+pub fn checkTimeout(server: *ReverseServer) !void {
     var it = server.sessions.iterator();
     const now = Io.Clock.Timestamp.now(server.io, .boot);
     
+    var expired: std.ArrayList(Message) = .empty;
+    defer expired.deinit(server.allocator);
+    
+    var expired_sessions: std.ArrayList(u32) = .empty;
+    defer expired_sessions.deinit(server.allocator);
+
     while (it.next()) |s| {
-        if (now.compare(.gte, s.value_ptr.session_expiry_timeout)) {
-            log.debug("Session Expired by Timeout [{d}]", .{s.value_ptr.session_id});
-            s.value_ptr.deinit();
-            server.sessions.removeByPtr(s.key_ptr);
+        if (s.value_ptr.checkSessionExpiry(now)) {
+            try expired_sessions.append(server.allocator, s.value_ptr.session_id);
+            continue;
+        }
+        
+        try server.retransmitPendingMsg(s.value_ptr, &expired);
+        expired.clearRetainingCapacity();
+    }
+
+    for (expired_sessions.items) |session_id| {
+        if (server.sessions.getPtr(session_id)) |s| {
+            log.debug("Session Expired by Timeout [{d}]", .{session_id});
+            s.deinit();
+            _ = server.sessions.remove(session_id);
         }
     }
 }
@@ -127,7 +152,7 @@ const log = std.log;
 
 const protocol = @import("protocol.zig");
 const Message = protocol.Message;
-const session = @import("session.zig");
-const Session = session.Session;
+const session_mod = @import("session.zig");
+const Session = session_mod.Session;
 
 pub const ReverseServer = @This();

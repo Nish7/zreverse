@@ -23,10 +23,20 @@ Test: Multiple Receive Data Response Tests:
     - 600 + 600
     - 1000 + 200
 
+Ack Handling:
+  - [x] Dropping the already acked messaged
+  - [x] Fully Ack scenario
+  - [x] Partial Ack scenario - With re-transmission
+  - [x] Boundry Ack Scenarios
+    - [x] Closed Session
+
 Timeouts:
-  - [ ] Make the "socket" timeout
-  - [ ] Re-transmision
-  - [ ] Session Expiry Timeout
+  - [x] Make the "socket" timeout
+  - [x] Re-transmision timeout
+    - Add a pending_tx arr
+    - Server handling of re-trasnmistted messages
+    - [ ] 3s hard total "session" timeout as well for unacked messages
+  - [x] Session Expiry Timeout
       - add a field "last_seen_at"
       - Every call to "checkTimeouts" 
       - for every session: check if  now >= last_seen_at

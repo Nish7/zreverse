@@ -68,6 +68,7 @@ fn sendData(s: *Session, data_msg: protocol.DataMsg) !Message {
 
 pub fn handleIncoming(session: *Session, message: Message) !Responses {
     session.updateSessionExpiryTimeout();
+    std.log.debug("Incoming message: {f}", .{message});
     var res = Responses{};
     switch (message) {
         .connect => |m| try session.handleConnect(m, &res),
@@ -109,8 +110,6 @@ pub fn checkSessionExpiry(session: *Session, now: Io.Clock.Timestamp) bool {
 }
 
 fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
-    std.log.debug("Ack Message Recieved Session Id: {d}", .{msg.session});
-
     // If the SESSION is not open: send /CLOSE/SESSION/ and stop.
     if (session.closed) {
         try res.push(.{ .close = .{ .session = msg.session } });
@@ -158,13 +157,11 @@ fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
 }
 
 fn handleConnect(session: *Session, msg: protocol.ConnectMsg, res: *Responses) !void {
-    std.log.debug("Connection Message Recieved Session Id: {d}", .{msg.session});
     try res.push(.{ .ack = .{ .session = msg.session, .length = 0 } });
     session.closed = false;
 }
 
 fn handleData(session: *Session, msg: protocol.DataMsg, res: *Responses) !void {
-    std.log.debug("Data Message Recieved Session Id: {d}", .{msg.session});
     if (msg.pos != session.recived_len) return error.NotRecieved;
 
     try session.current_line.appendSlice(session.allocator, msg.data);

@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     
     const allocator = init.gpa;
 
-    const addr = try net.IpAddress.parse("127.0.0.1", 3001);
+    const addr = try net.IpAddress.parse("0.0.0.0", 3001);
     var server = Server.init(.{
         .allocator = allocator,
         .io = io,

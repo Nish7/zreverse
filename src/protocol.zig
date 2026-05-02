@@ -25,6 +25,21 @@ pub const Message = union(MessageType) {
     ack: AckMsg,
     close: CloseMsg,
 
+    pub fn format(
+        self: Message,
+        writer: *std.Io.Writer,
+    ) !void {
+        switch (self) {
+            .connect => |m| try writer.print("/connect/{d}/", .{m.session}),
+            .data => |m| try writer.print(
+                "/data/{d}/{d}/{f}/",
+                .{ m.session, m.pos,  std.ascii.hexEscape(m.data, .lower) },
+            ),
+            .ack => |m| try writer.print("/ack/{d}/{d}/", .{ m.session, m.length }),
+            .close => |m| try writer.print("/close/{d}/", .{m.session}),
+        }
+    }
+
     pub fn getSessionId(msg: Message) u32 {
         return switch (msg) {
             .connect => |m| m.session,
@@ -49,16 +64,16 @@ pub const Message = union(MessageType) {
         var it = std.mem.splitScalar(u8, body, '/');
         const msg_type = it.next() orelse return error.InvalidMessage;
 
-        // /CONNECT/SESSION/
-        if (std.mem.eql(u8, msg_type, "CONNECT")) {
+        // /connect/SESSION/
+        if (std.mem.eql(u8, msg_type, "connect")) {
             const session = it.next() orelse return error.InvalidMessage;
             if (it.next() != null) return error.InvalidMessage;
             const session_id = try std.fmt.parseInt(u32, session, 10);
             return Message{ .connect = .{ .session = session_id } };
         }
 
-        // /ACK/SESSION/LENGTH/
-        if (std.mem.eql(u8, msg_type, "ACK")) {
+        // /ack/SESSION/LENGTH/
+        if (std.mem.eql(u8, msg_type, "ack")) {
             const session = it.next() orelse return error.InvalidMessage;
             const length = it.next() orelse return error.InvalidMessage;
             if (it.next() != null) return error.InvalidMessage;
@@ -67,8 +82,8 @@ pub const Message = union(MessageType) {
             return Message{ .ack = .{ .session = session_id, .length = ack_len } };
         }
 
-        // /DATA/SESSION/POS/DATA/
-        if (std.mem.eql(u8, msg_type, "DATA")) {
+        // /data/SESSION/POS/DATA/
+        if (std.mem.eql(u8, msg_type, "data")) {
             const session = it.next() orelse return error.InvalidMessage;
             const pos = it.next() orelse return error.InvalidMessage;
             const escaped_data = it.next() orelse return error.InvalidMessage;
@@ -79,8 +94,8 @@ pub const Message = union(MessageType) {
             return Message{ .data = .{ .session = session_id, .pos = data_pos, .data = data } };
         }
 
-        // /CLOSE/SESSION/
-        if (std.mem.eql(u8, msg_type, "CLOSE")) {
+        // /close/SESSION/
+        if (std.mem.eql(u8, msg_type, "close")) {
             const session = it.next() orelse return error.InvalidMessage;
             if (it.next() != null) return error.InvalidMessage;
             const session_id = try std.fmt.parseInt(u32, session, 10);
@@ -114,14 +129,14 @@ pub const Message = union(MessageType) {
     pub fn getPayload(msg: Message, allocator: std.mem.Allocator) ![]const u8 {
         // @TODO: i can switch to fixed buffer, instead of heap allocator..
         return switch (msg) {
-            .connect => |m| try std.fmt.allocPrint(allocator, "/CONNECT/{d}/", .{m.session}),
+            .connect => |m| try std.fmt.allocPrint(allocator, "/connect/{d}/", .{m.session}),
             .data => |m| try std.fmt.allocPrint(
                 allocator,
-                "/DATA/{d}/{d}/{s}/",
+                "/data/{d}/{d}/{s}/",
                 .{ m.session, m.pos, m.data },
             ),
-            .ack => |m| try std.fmt.allocPrint(allocator, "/ACK/{d}/{d}/", .{ m.session, m.length }),
-            .close => |m| try std.fmt.allocPrint(allocator, "/CLOSE/{d}/", .{m.session}),
+            .ack => |m| try std.fmt.allocPrint(allocator, "/ack/{d}/{d}/", .{ m.session, m.length }),
+            .close => |m| try std.fmt.allocPrint(allocator, "/close/{d}/", .{m.session}),
         };
     }
 };
@@ -131,10 +146,10 @@ test "parse valid message types" {
         input: []const u8,
         want_tag: MessageType,
     }{
-        .{ .input = "/CONNECT/42/", .want_tag = .connect },
-        .{ .input = "/ACK/42/12/", .want_tag = .ack },
-        .{ .input = "/CLOSE/42/", .want_tag = .close },
-        .{ .input = "/DATA/32/1/hello, world\n/", .want_tag = .data },
+        .{ .input = "/connect/42/", .want_tag = .connect },
+        .{ .input = "/ack/42/12/", .want_tag = .ack },
+        .{ .input = "/close/42/", .want_tag = .close },
+        .{ .input = "/data/32/1/hello, world\n/", .want_tag = .data },
     };
 
     for (cases) |c| {
@@ -149,11 +164,11 @@ test "parse valid connect message" {
         input: []const u8,
         sessionId: ?u32,
     }{
-        .{ .input = "/CONNECT/42/", .sessionId = 42 },
-        .{ .input = "/CONNECT/0/", .sessionId = 0 },
-        .{ .input = "/CONNECT/10000/", .sessionId = 10000 },
-        .{ .input = "/CONNECT/239049929/", .sessionId = 239049929 },
-        .{ .input = "/CONNECT/-1/", .sessionId = null },
+        .{ .input = "/connect/42/", .sessionId = 42 },
+        .{ .input = "/connect/0/", .sessionId = 0 },
+        .{ .input = "/connect/10000/", .sessionId = 10000 },
+        .{ .input = "/connect/239049929/", .sessionId = 239049929 },
+        .{ .input = "/connect/-1/", .sessionId = null },
     };
 
     for (cases) |c| {
@@ -172,8 +187,8 @@ test "parse valid ack message" {
         sessionId: u32,
         length: u32,
     }{
-        .{ .input = "/ACK/42/2/", .sessionId = 42, .length = 2 },
-        .{ .input = "/ACK/0/1/", .sessionId = 0, .length = 1 },
+        .{ .input = "/ack/42/2/", .sessionId = 42, .length = 2 },
+        .{ .input = "/ack/0/1/", .sessionId = 0, .length = 1 },
     };
 
     for (cases) |c| {
@@ -189,8 +204,8 @@ test "parse valid close message" {
         input: []const u8,
         sessionId: u32,
     }{
-        .{ .input = "/CLOSE/12/", .sessionId = 12 },
-        .{ .input = "/CLOSE/0/", .sessionId = 0 },
+        .{ .input = "/close/12/", .sessionId = 12 },
+        .{ .input = "/close/0/", .sessionId = 0 },
     };
 
     for (cases) |c| {
@@ -206,7 +221,7 @@ test "parse valid data message" {
         pos: u32,
         data: []const u8,
     }{
-        .{ .input = "/DATA/42/1/Hello, world\n/", .sessionId = 42, .pos = 1, .data = "Hello, world\n" },
+        .{ .input = "/data/42/1/Hello, world\n/", .sessionId = 42, .pos = 1, .data = "Hello, world\n" },
     };
 
     for (cases) |c| {
@@ -229,9 +244,9 @@ test "parse invalid message returns error" {
     try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, ""));
     try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "BOGUS"));
     try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "CONNECT/42/"));
-    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "/CONNECT/42"));
-    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "/CLOSE/12/extra/"));
-    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "/DATA/1/2/hello/extra/"));
+    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "/connect/42"));
+    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "/close/12/extra/"));
+    try testing.expectError(error.InvalidMessage, Message.parseMessage(testing.allocator, "/data/1/2/hello/extra/"));
 }
 
 const std = @import("std");

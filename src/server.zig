@@ -106,7 +106,7 @@ pub fn recieve(server: *ReverseServer) !void {
     } });
 
     const parsed_message = Message.parseMessage(server.allocator, msg.data) catch |err| {
-        log.err("failed to parse message: {t}", .{err});
+        log.err("failed to parse message: {t} {s}", .{err, msg.data});
         return err;
     };
 
@@ -136,7 +136,7 @@ pub fn recieve(server: *ReverseServer) !void {
 }
 
 pub fn send(server: *ReverseServer, to: *const IpAddress, message: Message) !void {
-    std.log.debug("Sending the message to {f} the message {any}", .{ to, message });
+    std.log.debug("Sending the message to {f} the message {f}", .{ to, message });
     const io = server.io;
     const message_payload = try message.getPayload(server.allocator);
     defer server.allocator.free(message_payload);

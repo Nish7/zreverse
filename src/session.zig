@@ -68,7 +68,7 @@ fn sendData(s: *Session, data_msg: protocol.DataMsg) !Message {
 
 pub fn handleIncoming(session: *Session, message: Message) !Responses {
     session.updateSessionExpiryTimeout();
-    std.log.debug("Incoming message: {f}", .{message});
+    sessionLog(session, .debug, "incoming={f}", .{message});
     var res = Responses{};
     switch (message) {
         .connect => |m| try session.handleConnect(m, &res),
@@ -112,15 +112,20 @@ pub fn checkSessionExpiry(session: *Session, now: Io.Clock.Timestamp) bool {
 fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
     // If the SESSION is not open: send /CLOSE/SESSION/ and stop.
     if (session.closed) {
+        sessionLog(session, .debug, "ack on closed; replying close", .{});
         try res.push(.{ .close = .{ .session = msg.session } });
         return;
     }
 
     // Duplicate/delayed ACK.
-    if (msg.length <= session.acked_len) return;
+    if (msg.length <= session.acked_len) {
+        sessionLog(session, .debug, "duplicate ack={d} last={d}", .{ msg.length, session.acked_len });
+        return;
+    }
 
     // Peer ACKed beyond total payload sent.
     if (msg.length > session.pending_len) {
+        sessionLog(session, .warn, "invalid ack={d} pending={d}; closing", .{ msg.length, session.pending_len });
         session.closed = true;
         try res.push(.{ .close = .{ .session = msg.session } });
         return;
@@ -131,7 +136,10 @@ fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
     session.dropPendingMessageTillPos(msg.length);
 
     // Fully ACKed: no reply.
-    if (msg.length == session.pending_len) return;
+    if (msg.length == session.pending_len) {
+        sessionLog(session, .debug, "fully acked at {d}", .{msg.length});
+        return;
+    }
 
     // Partial Ack-ing
     // Retransmit all payload after ACK.length.
@@ -149,10 +157,20 @@ fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
                     .pos = start_pos,
                     .data = d.data[offset..],
                 });
+                sessionLog(session, .debug, "retransmit pos={d} bytes={d}", .{ start_pos, retransmit.data.data.len });
                 try res.push(retransmit);
             },
             else => {},
         }
+    }
+}
+
+fn sessionLog(session: *const Session, comptime level: std.log.Level, comptime fmt: []const u8, args: anytype) void {
+    switch (level) {
+        .debug => slog.debug("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .info => slog.info("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .warn => slog.warn("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .err => slog.err("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
     }
 }
 
@@ -208,6 +226,7 @@ const net = Io.net;
 const IpAddress = net.IpAddress;
 const Allocator = std.mem.Allocator;
 const log = std.log;
+const slog = std.log.scoped(.session);
 
 const protocol = @import("protocol.zig");
 const Message = protocol.Message;

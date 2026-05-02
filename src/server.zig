@@ -62,6 +62,9 @@ pub fn serve(server: *ReverseServer) !void {
 
 pub fn retransmitPendingMsg(server: *ReverseServer, session: *Session, out: *std.ArrayList(Message)) !void {
     try session.takeExpiredPendingMessages(out);
+    if (out.items.len > 0) {
+        log.debug("session={d} retransmit count={d}", .{ session.session_id, out.items.len });
+    }
     for (out.items) |m| {
         try server.send(&session.from, m);
     }
@@ -111,19 +114,20 @@ pub fn recieve(server: *ReverseServer) !void {
     };
 
     defer parsed_message.deinit(server.allocator);
-    var s: *Session = server.getOrCreateSession(parsed_message.getSessionId(), msg.from) catch |err| {
-        log.err("Invalid Session Id {t}", .{err});
+    const session_id = parsed_message.getSessionId();
+    var s: *Session = server.getOrCreateSession(session_id, msg.from) catch |err| {
+        log.err("session=[{d}] invalid session id error={t}", .{ session_id, err });
         return err;
     };
 
     const res = s.handleIncoming(parsed_message) catch |err| {
-        log.err("Error in handling message {t}", .{err});
+        log.err("session=[{d}] handle error={t}", .{ s.session_id, err });
         return err;
     };
 
     for (res.slice()) |reply| {
         server.send(&s.from, reply) catch |err| {
-            log.err("Error in reply message {t}", .{err});
+            log.err("session=[{d}] reply send error={t}", .{ s.session_id, err });
             return err;
         };
         reply.deinit(server.allocator);
@@ -136,7 +140,7 @@ pub fn recieve(server: *ReverseServer) !void {
 }
 
 pub fn send(server: *ReverseServer, to: *const IpAddress, message: Message) !void {
-    std.log.debug("Sending the message to {f} the message {f}", .{ to, message });
+    std.log.debug("session=[{d}] send to={f} msg={f}", .{ message.getSessionId(), to, message });
     const io = server.io;
     const message_payload = try message.getPayload(server.allocator);
     defer server.allocator.free(message_payload);

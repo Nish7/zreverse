@@ -38,7 +38,7 @@ pub fn stopServer(env: *TestEnv, future: *Io.Future(@typeInfo(@TypeOf(Server.ser
 }
 
 pub fn expectConnectMessage(client: *Client, server: *Server, session_id: u32) !void {
-    const msg = try std.fmt.allocPrint(testing.allocator, "/CONNECT/{d}/", .{session_id});
+    const msg = try std.fmt.allocPrint(testing.allocator, "/connect/{d}/", .{session_id});
     defer testing.allocator.free(msg);
     try client.send(server.udp_socket.?.address, msg);
     const connect_ack = try client.recieve();

@@ -4,7 +4,7 @@ session_id: u32,
 from: net.IpAddress,
 current_line: std.ArrayList(u8),
 recived_len: u32 = 0,
-pending_len: u32 = 0,
+sent_len: u32 = 0,
 acked_len: u32 = 0,
 closed: bool = true,
 session_expiry_timeout: Io.Clock.Timestamp,
@@ -50,13 +50,14 @@ pub fn takeExpiredPendingMessages(s: *Session, out: *std.ArrayList(Message)) !vo
 }
 
 fn queuePendingMessage(s: *Session, msg: Message) !void {
+    s.sent_len += @intCast(msg.data.data.len);
     try s.pending_messages.append(s.allocator, .{
         .message = msg,
         .timeout = Io.Clock.Timestamp.fromNow(s.io, RETRASMISSION_TIMEOUT),
     });
 }
 
-fn sendData(s: *Session, data_msg: protocol.DataMsg) !Message {
+fn getData(s: *Session, data_msg: protocol.DataMsg) !Message {
     // @TODO: handle multiple send if necessary
     const dup = try s.allocator.dupe(u8, data_msg.data);
     return .{ .data = .{
@@ -80,13 +81,10 @@ pub fn handleIncoming(session: *Session, message: Message) !Responses {
 }
 
 fn dropPendingMessageTillPos(session: *Session, tillPos: u32) void {
-    // Invariants: queued pending data are montotinic by pos
     var remove_count: usize = 0;
     for (session.pending_messages.items) |pm| {
-        const fully_acked = switch (pm.message) {
-            .data => |d| (d.pos + @as(u32, @intCast(d.data.len))) <= tillPos,
-            else => false,
-        };
+        const d = pm.message.data;
+        const fully_acked =  d.pos + @as(u32, @intCast(d.data.len)) <= tillPos;
         if (!fully_acked) break;
         remove_count += 1;
     }
@@ -103,6 +101,26 @@ fn dropPendingMessageTillPos(session: *Session, tillPos: u32) void {
         );
         session.pending_messages.items.len -= remove_count;
     }
+}
+
+fn trimFirstPendingMessageToPos(session: *Session, tillPos: u32) !void {
+    if (session.pending_messages.items.len == 0) return;
+
+    const first_pending = &session.pending_messages.items[0];
+    const d = first_pending.*.message.data;
+    if (tillPos <= d.pos) return;
+
+    const end_pos = d.pos + @as(u32, @intCast(d.data.len));
+    if (tillPos >= end_pos) return;
+
+    const offset: usize = @intCast(tillPos - d.pos);
+    const suffix = try session.allocator.dupe(u8, d.data[offset..]);
+    session.allocator.free(d.data);
+    first_pending.message = .{ .data = .{
+        .session = d.session,
+        .pos = tillPos,
+        .data = suffix,
+    } };
 }
 
 pub fn checkSessionExpiry(session: *Session, now: Io.Clock.Timestamp) bool {
@@ -124,8 +142,8 @@ fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
     }
 
     // Peer ACKed beyond total payload sent.
-    if (msg.length > session.pending_len) {
-        sessionLog(session, .warn, "invalid ack={d} pending={d}; closing", .{ msg.length, session.pending_len });
+    if (msg.length > session.sent_len) {
+        sessionLog(session, .debug, "invalid ack={d} pending={d}; closing", .{ msg.length, session.sent_len });
         session.closed = true;
         try res.push(.{ .close = .{ .session = msg.session } });
         return;
@@ -136,41 +154,31 @@ fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
     session.dropPendingMessageTillPos(msg.length);
 
     // Fully ACKed: no reply.
-    if (msg.length == session.pending_len) {
+    if (msg.length == session.sent_len) {
         sessionLog(session, .debug, "fully acked at {d}", .{msg.length});
         return;
     }
 
-    // Partial Ack-ing
-    // Retransmit all payload after ACK.length.
-    var first = true;
+    // Partial Ack-ing: pending_messages now contain only unacked payload.
+    try session.trimFirstPendingMessageToPos(msg.length);
     for (session.pending_messages.items) |pm| {
-        switch (pm.message) {
-            .data => |d| {
-                var start_pos = d.pos;
-                if (first and msg.length > d.pos) start_pos = msg.length;
-                first = false;
-
-                const offset: usize = @intCast(start_pos - d.pos);
-                const retransmit = try sendData(session, .{
-                    .session = d.session,
-                    .pos = start_pos,
-                    .data = d.data[offset..],
-                });
-                sessionLog(session, .debug, "retransmit pos={d} bytes={d}", .{ start_pos, retransmit.data.data.len });
-                try res.push(retransmit);
-            },
-            else => {},
-        }
+        const d = pm.message.data;
+        const retransmit = try getData(session, .{
+            .session = d.session,
+            .pos = d.pos,
+            .data = d.data,
+        });
+        sessionLog(session, .debug, "retransmit pos={d} bytes={d}", .{ d.pos, retransmit.data.data.len });
+        try res.push(retransmit);
     }
 }
 
 fn sessionLog(session: *const Session, comptime level: std.log.Level, comptime fmt: []const u8, args: anytype) void {
     switch (level) {
-        .debug => slog.debug("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
-        .info => slog.info("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
-        .warn => slog.warn("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
-        .err => slog.err("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .debug => log.debug("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .info => log.info("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .warn => log.warn("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .err => log.err("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
     }
 }
 
@@ -180,19 +188,38 @@ fn handleConnect(session: *Session, msg: protocol.ConnectMsg, res: *Responses) !
 }
 
 fn handleData(session: *Session, msg: protocol.DataMsg, res: *Responses) !void {
-    if (msg.pos != session.recived_len) return error.NotRecieved;
+    if (msg.pos > session.recived_len) {
+        sessionLog(session, .debug, "missing inbound bytes have={d} got_pos={d}; sending duplicate ack", .{ session.recived_len, msg.pos });
+        try res.push(.{ .ack = .{ .session = msg.session, .length = session.recived_len } });
+        return;
+    }
+
+    if (msg.pos < session.recived_len) {
+        sessionLog(session, .debug, "duplicate/overlapping data pos={d} have={d}; sending duplicate ack", .{ msg.pos, session.recived_len });
+        try res.push(.{ .ack = .{ .session = msg.session, .length = session.recived_len } });
+        return;
+    }
 
     try session.current_line.appendSlice(session.allocator, msg.data);
     session.recived_len += @intCast(msg.data.len);
 
-    if (std.mem.findScalar(u8, session.current_line.items, '\n')) |idx| {
+    var out_pos = session.sent_len;
+    while (std.mem.findScalar(u8, session.current_line.items, '\n')) |idx| {
         const reversed = try session.allocator.dupe(u8, session.current_line.items[0 .. idx + 1]);
         std.mem.reverse(u8, reversed[0..idx]);
         session.current_line.replaceRangeAssumeCapacity(0, idx + 1, "");
-        const message_payload: Message = .{ .data = .{ .session = msg.session, .pos = msg.pos, .data = reversed } };
-        session.pending_len += @intCast(reversed.len);
+
+        const message_payload: Message = .{
+            .data = .{
+                .session = msg.session,
+                .pos = out_pos,
+                .data = reversed,
+            },
+        };
+
+        out_pos += @intCast(reversed.len);
         try session.queuePendingMessage(message_payload);
-        try res.push(try sendData(session, message_payload.data));
+        try res.push(try getData(session, message_payload.data));
     }
 
     try res.push(.{ .ack = .{ .session = msg.session, .length = session.recived_len } });
@@ -205,7 +232,7 @@ fn handleClose(session: *Session, msg: protocol.CloseMsg, res: *Responses) !void
 
 // @TODO: Find a better way to handle multiple responses
 const Responses = struct {
-    items: [4]Message = undefined,
+    items: [10]Message = undefined,
     len: usize = 0,
 
     pub fn push(self: *Responses, msg: Message) !void {
@@ -225,8 +252,8 @@ const Io = std.Io;
 const net = Io.net;
 const IpAddress = net.IpAddress;
 const Allocator = std.mem.Allocator;
-const log = std.log;
-const slog = std.log.scoped(.session);
+const log = std.log.scoped(.session);
 
 const protocol = @import("protocol.zig");
 const Message = protocol.Message;
+const DataMsg = protocol.DataMsg;

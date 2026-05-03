@@ -50,12 +50,12 @@ pub fn serve(server: *ReverseServer) !void {
     while (true) {
         server.recieve() catch |err| switch (err) {
             error.Canceled => return,
-            error.Timeout => {},
+            error.Timeout => {
+                server.checkTimeout() catch |timeout_err| {
+                    log.err("Error detected during timeout sweep: {t}", .{timeout_err});
+                };
+            },
             else => {},
-        };
-
-        server.checkTimeout() catch |err| {
-            log.err("Error detected: {t}", .{err});
         };
     }
 }
@@ -152,7 +152,7 @@ const Io = std.Io;
 const net = Io.net;
 const IpAddress = net.IpAddress;
 const Allocator = std.mem.Allocator;
-const log = std.log;
+const log = std.log.scoped(.server);
 
 const protocol = @import("protocol.zig");
 const Message = protocol.Message;

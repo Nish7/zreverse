@@ -11,7 +11,7 @@ test "smoke connect test: expected ack with 0 length" {
     defer recv_future.await(io) catch {};
     defer recv_future.cancel(io) catch {};
 
-    try client.send(env.server.udp_socket.?.address, "/CONNECT/42/");
+    try client.send(env.server.udp_socket.?.address, "/connect/42/");
     const recieved_message = try client.recieve();
 
     try testing.expectEqual(@as(u32, 0), recieved_message.ack.length);
@@ -31,8 +31,8 @@ test "basic session management test" {
     var serv_future = try env.startServer();
     defer env.stopServer(&serv_future);
 
-    var a_connect_fut = try io.concurrent(Client.send, .{ &client_a, env.server.udp_socket.?.address, "/CONNECT/1/" });
-    var b_connect_fut = try io.concurrent(Client.send, .{ &client_b, env.server.udp_socket.?.address, "/CONNECT/2/" });
+    var a_connect_fut = try io.concurrent(Client.send, .{ &client_a, env.server.udp_socket.?.address, "/connect/1/" });
+    var b_connect_fut = try io.concurrent(Client.send, .{ &client_b, env.server.udp_socket.?.address, "/connect/2/" });
     var a_ack_fut = try io.concurrent(Client.recieve, .{&client_a});
     var b_ack_fut = try io.concurrent(Client.recieve, .{&client_b});
 
@@ -78,8 +78,113 @@ test "single line - mulitple data payload" {
 
     try testutils.expectConnectMessage(&client, &env.server, 12345);
     try testutils.expectDataRecieve(&client, &env.server, "hello", 12345, 0, 5, null);
-    try testutils.expectDataRecieve(&client, &env.server, "world!\n", 12345, 5, 12, "!dlrowolleh\n");
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .data = .{
+            .session = 12345,
+            .pos = 5,
+            .data = "world!\n",
+        },
+    });
+
+    const first_reply = try client.recieve();
+    defer first_reply.deinit(testing.allocator);
+    const second_reply = try client.recieve();
+    defer second_reply.deinit(testing.allocator);
+
+    if (std.meta.activeTag(first_reply) == .ack) {
+        try testing.expectEqual(@as(u32, 12345), first_reply.ack.session);
+        try testing.expectEqual(@as(u32, 12), first_reply.ack.length);
+        try testing.expectEqual(@as(u32, 12345), second_reply.data.session);
+        try testing.expectEqual(@as(u32, 0), second_reply.data.pos);
+        try testing.expectEqualStrings("!dlrowolleh\n", second_reply.data.data);
+    } else {
+        try testing.expectEqual(@as(u32, 12345), first_reply.data.session);
+        try testing.expectEqual(@as(u32, 0), first_reply.data.pos);
+        try testing.expectEqualStrings("!dlrowolleh\n", first_reply.data.data);
+        try testing.expectEqual(@as(u32, 12345), second_reply.ack.session);
+        try testing.expectEqual(@as(u32, 12), second_reply.ack.length);
+    }
     try testutils.expectCloseMessage(&client, &env.server, 12345);
+}
+
+test "single data payload with multiple newlines emits multiple reversed data replies" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 3333;
+    const payload = "hello\nworld\n";
+
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .data = .{
+            .session = session_id,
+            .pos = 0,
+            .data = payload,
+        },
+    });
+
+    const first_reply = try client.recieve();
+    defer first_reply.deinit(testing.allocator);
+    const second_reply = try client.recieve();
+    defer second_reply.deinit(testing.allocator);
+    const third_reply = try client.recieve();
+    defer third_reply.deinit(testing.allocator);
+
+    const replies = [_]Message{ first_reply, second_reply, third_reply };
+    var saw_ack = false;
+    var saw_pos_0 = false;
+    var saw_pos_6 = false;
+
+    for (replies) |reply| {
+        switch (reply) {
+            .ack => |a| {
+                try testing.expectEqual(session_id, a.session);
+                try testing.expectEqual(@as(u32, payload.len), a.length);
+                saw_ack = true;
+            },
+            .data => |d| {
+                try testing.expectEqual(session_id, d.session);
+                if (d.pos == 0) {
+                    try testing.expectEqualStrings("olleh\n", d.data);
+                    saw_pos_0 = true;
+                } else if (d.pos == 6) {
+                    try testing.expectEqualStrings("dlrow\n", d.data);
+                    saw_pos_6 = true;
+                } else {
+                    try testing.expect(false);
+                }
+            },
+            else => try testing.expect(false),
+        }
+    }
+
+    try testing.expect(saw_ack);
+    try testing.expect(saw_pos_0);
+    try testing.expect(saw_pos_6);
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 6,
+        },
+    });
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .ack = .{
+            .session = session_id,
+            .length = 12,
+        },
+    });
+
+    try std.Io.sleep(io, .fromMilliseconds(60), .boot);
+    try testing.expectEqual(@as(usize, 0), env.server.sessions.getPtr(session_id).?.pending_messages.items.len);
 }
 
 test "ack length beyond sent payload closes session" {
@@ -96,7 +201,6 @@ test "ack length beyond sent payload closes session" {
     const session_id: u32 = 555;
     try testutils.expectConnectMessage(&client, &env.server, session_id);
 
-    // pending_len starts at 0, so ACK length 1 is invalid and should close the session.
     try client.sendMessage(env.server.udp_socket.?.address, .{
         .ack = .{
             .session = session_id,
@@ -260,12 +364,13 @@ test "session expiry removes only timed out session" {
     try testing.expect(env.server.sessions.contains(202));
 }
 
-
 const std = @import("std");
 const server_mod = @import("../src/server.zig");
 const client_mod = @import("../src/client.zig");
+const protocol = @import("../src/protocol.zig");
 const testing = std.testing;
 const Client = client_mod.Client;
+const Message = protocol.Message;
 const Server = server_mod.ReverseServer;
 const Io = std.Io;
 const net = Io.net;

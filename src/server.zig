@@ -35,7 +35,11 @@ pub fn bind(server: *ReverseServer) !void {
     };
 }
 
-pub fn getOrCreateSession(server: *ReverseServer, session_id: u32, from: net.IpAddress) !*Session {
+pub fn getSession(server: *ReverseServer, session_id: u32) ?*Session {
+    return server.sessions.getPtr(session_id);
+}
+
+pub fn createSession(server: *ReverseServer, session_id: u32, from: net.IpAddress) !*Session {
     const entry = try server.sessions.getOrPut(session_id);
     if (!entry.found_existing) entry.value_ptr.* = Session.init(server.io, server.allocator, session_id, from);
     return entry.value_ptr;
@@ -63,7 +67,7 @@ pub fn serve(server: *ReverseServer) !void {
 pub fn retransmitPendingMsg(server: *ReverseServer, session: *Session, out: *std.ArrayList(Message)) !void {
     try session.takeExpiredPendingMessages(out);
     if (out.items.len > 0) {
-        log.debug("session={d} retransmit count={d}", .{ session.session_id, out.items.len });
+        log.debug("session={d} retransmit timeout: count={d}", .{ session.session_id, out.items.len });
     }
     for (out.items) |m| {
         try server.send(&session.from, m);
@@ -73,10 +77,10 @@ pub fn retransmitPendingMsg(server: *ReverseServer, session: *Session, out: *std
 pub fn checkTimeout(server: *ReverseServer) !void {
     var it = server.sessions.iterator();
     const now = Io.Clock.Timestamp.now(server.io, .boot);
-    
+
     var expired: std.ArrayList(Message) = .empty;
     defer expired.deinit(server.allocator);
-    
+
     var expired_sessions: std.ArrayList(u32) = .empty;
     defer expired_sessions.deinit(server.allocator);
 
@@ -85,7 +89,7 @@ pub fn checkTimeout(server: *ReverseServer) !void {
             try expired_sessions.append(server.allocator, s.value_ptr.session_id);
             continue;
         }
-        
+
         try server.retransmitPendingMsg(s.value_ptr, &expired);
         expired.clearRetainingCapacity();
     }
@@ -109,33 +113,43 @@ pub fn recieve(server: *ReverseServer) !void {
     } });
 
     const parsed_message = Message.parseMessage(server.allocator, msg.data) catch |err| {
-        log.err("failed to parse message: {t} {s}", .{err, msg.data});
+        log.err("[{f}] failed to parse message: {t} {f}", .{ msg.from, err, std.ascii.hexEscape(msg.data, .lower) });
         return err;
     };
 
     defer parsed_message.deinit(server.allocator);
     const session_id = parsed_message.getSessionId();
-    var s: *Session = server.getOrCreateSession(session_id, msg.from) catch |err| {
-        log.err("session=[{d}] invalid session id error={t}", .{ session_id, err });
-        return err;
+    var session_opt = server.getSession(session_id);
+
+    if (std.meta.activeTag(parsed_message) == .connect and session_opt == null) {
+        session_opt = server.createSession(session_id, msg.from) catch |err| {
+            log.err("error creating a session {t}", .{err});
+            return;
+        };
+    }
+
+    const session = session_opt orelse {
+        log.debug("session=[{d}] no session id; replying close", .{session_id});
+        try server.send(&msg.from, .{ .close = .{ .session = session_id } });
+        return;
     };
 
-    const res = s.handleIncoming(parsed_message) catch |err| {
-        log.err("session=[{d}] handle error={t}", .{ s.session_id, err });
+    const res = session.handleIncoming(parsed_message) catch |err| {
+        log.err("session=[{d}] handle error={t}", .{ session.session_id, err });
         return err;
     };
 
     for (res.slice()) |reply| {
-        server.send(&s.from, reply) catch |err| {
-            log.err("session=[{d}] reply send error={t}", .{ s.session_id, err });
+        server.send(&session.from, reply) catch |err| {
+            log.err("session=[{d}] reply send error={t}", .{ session.session_id, err });
             return err;
         };
         reply.deinit(server.allocator);
     }
 
-    if (s.closed) {
-        s.deinit();
-        _ = server.sessions.remove(s.session_id);
+    if (session.closed) {
+        session.deinit();
+        _ = server.sessions.remove(session.session_id);
     }
 }
 

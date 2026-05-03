@@ -175,10 +175,10 @@ fn handleAck(session: *Session, msg: protocol.AckMsg, res: *Responses) !void {
 
 fn sessionLog(session: *const Session, comptime level: std.log.Level, comptime fmt: []const u8, args: anytype) void {
     switch (level) {
-        .debug => log.debug("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
-        .info => log.info("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
-        .warn => log.warn("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
-        .err => log.err("[sid={d}] " ++ fmt, .{session.session_id} ++ args),
+        .debug => log.debug("[{d}] " ++ fmt, .{session.session_id} ++ args),
+        .info => log.info("[{d}] " ++ fmt, .{session.session_id} ++ args),
+        .warn => log.warn("[{d}] " ++ fmt, .{session.session_id} ++ args),
+        .err => log.err("[{d}] " ++ fmt, .{session.session_id} ++ args),
     }
 }
 

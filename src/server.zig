@@ -155,9 +155,49 @@ pub fn recieve(server: *ReverseServer) !void {
 
 pub fn send(server: *ReverseServer, to: *const IpAddress, message: Message) !void {
     std.log.debug("session=[{d}] send to={f} msg={f}", .{ message.getSessionId(), to, message });
+    switch (message) {
+        .data => |m| return server.sendChunkedData(to, m),
+        else => return try server.sendEncoded(to, message),
+    }
+}
+
+fn sendChunkedData(server: *ReverseServer, to: *const IpAddress, data_msg: protocol.DataMsg) !void {
+    var offset: usize = 0;
+
+    while (offset < data_msg.data.len) {
+        const pos = data_msg.pos + @as(u32, @intCast(offset));
+        var end = @min(data_msg.data.len, offset + 999);
+
+        while (true) {
+            if (end <= offset) return error.PacketTooLarge;
+
+            const chunk: Message = .{
+                .data = .{
+                    .session = data_msg.session,
+                    .pos = pos,
+                    .data = data_msg.data[offset..end],
+                },
+            };
+
+            const message_payload = try chunk.getPayload(server.allocator);
+            defer server.allocator.free(message_payload);
+
+            if (message_payload.len < 1000) {
+                try server.udp_socket.?.send(server.io, to, message_payload);
+                offset = end;
+                break;
+            }
+
+            end -= 1;
+        }
+    }
+}
+
+fn sendEncoded(server: *ReverseServer, to: *const IpAddress, message: Message) !void {
     const io = server.io;
     const message_payload = try message.getPayload(server.allocator);
     defer server.allocator.free(message_payload);
+    if (message_payload.len >= 1000) return error.PacketTooLarge;
     try server.udp_socket.?.send(io, to, message_payload);
 }
 

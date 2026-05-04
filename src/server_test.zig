@@ -338,6 +338,83 @@ test "retransmit pending message after retransmission timeout" {
     try testing.expectEqualStrings("olleh\n", retransmit.data.data);
 }
 
+test "long reversed line is split across multiple data messages" {
+    var env = try TestEnv.init();
+    defer env.deinit();
+    const io = env.threaded.io();
+
+    var client = try Client.init(io, testing.allocator);
+    defer client.deinit();
+
+    var serv_future = try env.startServer();
+    defer env.stopServer(&serv_future);
+
+    const session_id: u32 = 560;
+    try testutils.expectConnectMessage(&client, &env.server, session_id);
+
+    var line: [1201]u8 = undefined;
+    @memset(line[0..1200], 'a');
+    line[1200] = '\n';
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .data = .{
+            .session = session_id,
+            .pos = 0,
+            .data = line[0..800],
+        },
+    });
+
+    const first_ack = try client.recieve();
+    defer first_ack.deinit(testing.allocator);
+    try testing.expectEqual(.ack, std.meta.activeTag(first_ack));
+    try testing.expectEqual(@as(u32, session_id), first_ack.ack.session);
+    try testing.expectEqual(@as(u32, 800), first_ack.ack.length);
+
+    try client.sendMessage(env.server.udp_socket.?.address, .{
+        .data = .{
+            .session = session_id,
+            .pos = 800,
+            .data = line[800..],
+        },
+    });
+
+    const first_reply = try client.recieve();
+    defer first_reply.deinit(testing.allocator);
+    const second_reply = try client.recieve();
+    defer second_reply.deinit(testing.allocator);
+    const third_reply = try client.recieve();
+    defer third_reply.deinit(testing.allocator);
+
+    const replies = [_]Message{ first_reply, second_reply, third_reply };
+    var ack_seen = false;
+    var data_total: usize = 0;
+    var next_pos: u32 = 0;
+    var data_packets: usize = 0;
+
+    for (replies) |reply| {
+        switch (reply) {
+            .ack => |a| {
+                try testing.expectEqual(session_id, a.session);
+                try testing.expectEqual(@as(u32, line.len), a.length);
+                ack_seen = true;
+            },
+            .data => |d| {
+                try testing.expectEqual(session_id, d.session);
+                try testing.expectEqual(next_pos, d.pos);
+                try testing.expect(d.data.len < 1000);
+                next_pos += @as(u32, @intCast(d.data.len));
+                data_total += d.data.len;
+                data_packets += 1;
+            },
+            else => try testing.expect(false),
+        }
+    }
+
+    try testing.expect(ack_seen);
+    try testing.expectEqual(@as(usize, 2), data_packets);
+    try testing.expectEqual(line.len, data_total);
+}
+
 test "session expiry removes only timed out session" {
     var env = try TestEnv.init();
     defer env.deinit();
